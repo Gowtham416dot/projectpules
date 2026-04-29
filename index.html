@@ -687,28 +687,79 @@ let _msalApp = null;
 
 function _initMsal() {
   if (!odClientId) return;
+  // Always use the current page URL (without query/hash) as redirect URI.
+  // NOTE: file:// origins are blocked by Azure AD — serve this file via http/https.
+  const redirectUri = location.href.split('?')[0].split('#')[0];
   _msalApp = new msal.PublicClientApplication({
     auth: {
       clientId: odClientId,
       authority: 'https://login.microsoftonline.com/common',
-      redirectUri: location.href.split('?')[0].split('#')[0]
+      redirectUri
     },
-    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
+    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false },
+    system: { loggerOptions: { logLevel: msal.LogLevel.Warning } }
   });
+  // MSAL v2 requires handleRedirectPromise() on every page load
+  _msalApp.handleRedirectPromise().catch(()=>{});
 }
 
 async function _getToken() {
   if (!_msalApp) _initMsal();
   if (!_msalApp) throw new Error('MSAL not initialised — enter Client ID first.');
+
+  // Block file:// immediately — Azure AD will reject the redirect URI
+  if (location.protocol === 'file:') {
+    throw new Error(
+      'This page is open as a local file (file://). ' +
+      'Microsoft login requires the page to be served over HTTP or HTTPS. ' +
+      'Use a local server (e.g. VS Code Live Server, or run: python -m http.server 8080) ' +
+      'then open http://localhost:8080/project-pulse-onedrive.html'
+    );
+  }
+
   const accounts = _msalApp.getAllAccounts();
+
+  // Silent refresh if we already have an account
+  if (accounts.length) {
+    try {
+      const r = await _msalApp.acquireTokenSilent({ scopes: OD_SCOPES, account: accounts[0] });
+      return r.accessToken;
+    } catch(silentErr) {
+      // Interaction required — fall through to popup
+    }
+  }
+
+  // Popup: MUST be the very next async call after the user click —
+  // no DOM mutations (like showLoading) should happen before this.
   try {
-    const r = accounts.length
-      ? await _msalApp.acquireTokenSilent({ scopes: OD_SCOPES, account: accounts[0] })
-      : await _msalApp.acquireTokenPopup({ scopes: OD_SCOPES });
-    return r.accessToken;
-  } catch(e) {
     const r = await _msalApp.acquireTokenPopup({ scopes: OD_SCOPES });
     return r.accessToken;
+  } catch(popupErr) {
+    const msg = popupErr.message || String(popupErr);
+    // Popup blocked by browser
+    if (msg.includes('popup_window_error') || msg.includes('BrowserAuthError')) {
+      throw new Error(
+        'The sign-in popup was blocked by your browser. ' +
+        'Click the popup-blocked icon in the address bar and choose "Always allow popups from this site", ' +
+        'then click Sign In & Connect again.'
+      );
+    }
+    // Consent / permission errors
+    if (msg.includes('AADSTS65001') || msg.includes('consent_required')) {
+      throw new Error(
+        'Admin consent is missing. In the Azure portal go to: ' +
+        'App registrations → your app → API permissions → ' +
+        'click "Grant admin consent" so the Files.ReadWrite permission shows a green tick.'
+      );
+    }
+    // Redirect URI mismatch
+    if (msg.includes('AADSTS50011') || msg.includes('redirect_uri_mismatch')) {
+      throw new Error(
+        'Redirect URI mismatch. In Azure portal go to: App registrations → your app → ' +
+        'Authentication → add this exact URI under Single-page application: ' + location.href.split('?')[0].split('#')[0]
+      );
+    }
+    throw popupErr;
   }
 }
 
@@ -870,15 +921,33 @@ async function connectOneDrive(){
   const fileUrl  = document.getElementById('od-file-url').value.trim();
   const errEl    = document.getElementById('url-error');
   errEl.style.display='none';
+
   if (!clientId) { errEl.textContent='Please enter your Azure App Client ID.'; errEl.style.display=''; return; }
   if (!fileUrl)  { errEl.textContent='Please paste your OneDrive/SharePoint Excel file URL.'; errEl.style.display=''; return; }
+
+  // Warn immediately if running from file://
+  if (location.protocol === 'file:') {
+    errEl.textContent = '⚠ This page is open as a file:// URL. Microsoft OAuth requires HTTP/HTTPS. ' +
+      'Serve it with VS Code Live Server (right-click → Open with Live Server) or ' +
+      'run: python -m http.server 8080  then open http://localhost:8080/project-pulse-onedrive.html';
+    errEl.style.display = '';
+    return;
+  }
 
   odClientId = clientId;
   _initMsal();
 
-  showLoading('Signing in with Microsoft…');
+  // ⚠ IMPORTANT: Close modal and hide any overlays BEFORE triggering the popup.
+  // Browsers require the popup to open as the direct result of a user gesture.
+  // Any DOM mutation (loading spinner, modal close) between the click and the
+  // popup call can break that requirement and silently swallow the popup.
+  document.getElementById('setup-modal').style.display = 'none';
+
   try {
+    // Popup fires here — nothing should block the call path from the button click
     await _getToken();
+
+    // Sign-in complete — now safe to show loading spinner
     showLoading('Resolving OneDrive file…');
 
     // Try extracting item ID from URL directly
@@ -917,15 +986,16 @@ async function connectOneDrive(){
 
     odFileId = resolvedId;
     saveODConfig(clientId, resolvedId);
-    document.getElementById('setup-modal').style.display='none';
     hideLoading();
     await manualSync();
   } catch(e) {
     hideLoading();
-    errEl.textContent = 'Connection failed: ' + e.message;
-    errEl.style.display='';
-    setSyncStatus('error','Connection failed');
-    console.error(e);
+    // Re-open modal so user can see the error
+    document.getElementById('setup-modal').style.display = 'flex';
+    errEl.textContent = e.message;
+    errEl.style.display = '';
+    setSyncStatus('error','Connection failed — see error in Connect dialog');
+    console.error('connectOneDrive error:', e);
   }
 }
 
@@ -1693,10 +1763,12 @@ async function init(){
   document.getElementById('r-week').value=today();
   document.getElementById('r-month').value=today().slice(0,7);
   loadLocal(); updSuggest(); renderDash(); renderToday();
-  if(odClientId&&odFileId){
+  if(odClientId&&odFileId&&location.protocol!=='file:'){
     _initMsal();
     await manualSync();
     setInterval(manualSync,5*60*1000);
+  } else if(location.protocol==='file:') {
+    setSyncStatus('offline','Open via HTTP/HTTPS for OneDrive sync (not file://)');
   } else {
     // Always show setup when no sheet URL is saved.
     // Remove any stale 'seen' flag so the modal always appears on fresh opens.
