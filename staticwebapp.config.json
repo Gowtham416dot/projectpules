@@ -1,0 +1,5 @@
+{
+    "globalHeaders": {
+        "content-security-policy": "default-src 'self'; font-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; script-src 'self' https://cdn.jsdelivr.net https://alcdn.msauth.net 'unsafe-inline' 'unsafe-eval'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline';"
+    }
+}
