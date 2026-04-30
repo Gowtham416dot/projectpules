@@ -6,18 +6,7 @@
 <title>Project Pulse v4.0 OneDrive — Covalense Global</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<script>
-(function(){
-  var s=document.createElement('script');
-  s.src='https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.28.0/dist/index.min.js';
-  s.onerror=function(){
-    var s2=document.createElement('script');
-    s2.src='https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
-    document.head.appendChild(s2);
-  };
-  document.head.appendChild(s);
-})();
-</script>
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" crossorigin="anonymous"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -720,9 +709,38 @@ function _getMsalLib() {
   return window.msal || window.msalBrowser || null;
 }
 
+// ── Human-readable MSAL/Graph error messages ─────────────────────────────
+function _friendlyMsalError(e) {
+  const msg = (e && (e.message || e.errorMessage || e.errorCode || String(e))) || '';
+  if (msg.includes('AADSTS50011') || msg.includes('redirect_uri_mismatch'))
+    return 'Redirect URI mismatch. In Azure portal → App registrations → your app → Authentication → Single-page application, add this exact URI: ' + _REDIRECT_URI;
+  if (msg.includes('AADSTS65001') || msg.includes('consent_required'))
+    return 'Admin consent missing. Azure portal → App registrations → your app → API permissions → click "Grant admin consent". Files.ReadWrite must show a green tick.';
+  if (msg.includes('AADSTS700016') || msg.includes('application_not_found'))
+    return 'Client ID not recognised. Copy it from the Azure app Overview page — format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.';
+  if (msg.includes('AADSTS90072'))
+    return 'Personal Microsoft accounts not allowed for this tenant. Set Supported account types to "Any Azure AD directory and personal Microsoft accounts" in Azure Authentication.';
+  if (msg.includes('AADSTS50020') || msg.includes('guest'))
+    return 'Guest/external accounts cannot use this app. Sign in with your home tenant account.';
+  if (msg.includes('interaction_in_progress'))
+    return 'Another sign-in is already in progress. Close all sign-in tabs, clear browser cookies for microsoftonline.com, then try again.';
+  if (msg.includes('BrowserAuthError') || msg.includes('popup'))
+    return 'Browser blocked the sign-in. This should not happen with redirect flow — please refresh the page and try again.';
+  return msg || 'Unknown sign-in error.';
+}
+
 function _buildMsalApp(clientId) {
   const lib = _getMsalLib();
-  if (!lib) throw new Error('MSAL library not loaded — check your internet connection and refresh the page.');
+  if (!lib) {
+    // Script loaded but window.msal not set — can happen if the CDN request
+    // is still in-flight. Give a clear message instead of a cryptic null error.
+    throw new Error(
+      'Microsoft sign-in library (MSAL) has not loaded yet. ' +
+      'Wait a moment and try again. If this keeps happening, ' +
+      'check that ' + location.hostname + ' is not blocking requests to alcdn.msauth.net.'
+    );
+  }
+  if (!clientId) throw new Error('No Client ID provided. Enter your Azure Application (client) ID.');
   return new lib.PublicClientApplication({
     auth: {
       clientId,
@@ -1857,4 +1875,4 @@ init();
 </script>
 </body>
 </html>
-  
+ 
