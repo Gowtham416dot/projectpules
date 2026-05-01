@@ -744,7 +744,7 @@ function _buildMsalApp(clientId) {
   return new lib.PublicClientApplication({
     auth: {
       clientId,
-      authority: 'https://login.microsoftonline.com/common',
+      authority: 'https://login.microsoftonline.com/6e8188a1-592f-4642-8269-8cfd64b4f0f3',
       redirectUri: _REDIRECT_URI
     },
     cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: true }
